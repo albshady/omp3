@@ -16,6 +16,25 @@ typedef struct Picture {
     unsigned char** pixels;
 } Picture;
 
+Picture copy_picture(Picture original) {
+    Picture copied;
+    copied.height = original.height;
+    copied.width = original.width;
+    copied.max_brightness = original.max_brightness;
+
+    unsigned char** pixels = (unsigned char**)malloc(original.height * sizeof(unsigned char *));
+
+    for (int i = 0; i < original.height; i++) {
+        pixels[i] = (unsigned char *)malloc(original.width * sizeof(unsigned char));
+        for (int j = 0; j < original.width; j++) {
+            pixels[i][j] = original.pixels[i][j];
+        }
+    }
+    copied.pixels = pixels;
+
+    return copied;
+}
+
 void destruct_pixels(unsigned char** pixels, uint32_t height) {
     for (int i = 0; i < height; i++)
         free(pixels[i]);
@@ -96,25 +115,6 @@ unsigned char** blur_box_vertically(Picture picture, int radius) {
     return pixels;
 }
 
-Picture copy_picture(Picture original) {
-    Picture copied;
-    copied.height = original.height;
-    copied.width = original.width;
-    copied.max_brightness = original.max_brightness;
-
-    unsigned char** pixels = (unsigned char**)malloc(original.height * sizeof(unsigned char *));
-
-    for (int i = 0; i < original.height; i++) {
-        pixels[i] = (unsigned char *)malloc(original.width * sizeof(unsigned char));
-        for (int j = 0; j < original.width; j++) {
-            pixels[i][j] = original.pixels[i][j];
-        }
-    }
-    copied.pixels = pixels;
-
-    return copied;
-}
-
 Picture blur_single_thread(Picture picture, uint32_t number_of_boxes, float sigma) {
     int radius = calculate_box_radius(sigma, number_of_boxes);
     Picture blurred = copy_picture(picture);
@@ -133,8 +133,71 @@ Picture blur_single_thread(Picture picture, uint32_t number_of_boxes, float sigm
     return blurred;
 }
 
+unsigned char** blur_box_horizontally_mp(Picture picture, int radius) {
+    unsigned char** pixels = (unsigned char**)malloc(picture.height * sizeof(unsigned char *));
+
+    for (int i = 0; i < picture.height; i++) {
+        pixels[i] = (unsigned char *)malloc(picture.width * sizeof(unsigned char));
+    }
+
+    #pragma omp parallel 
+    {
+        #pragma omp for schedule(static)
+        for (int i = 0; i < picture.height; i++) {
+            for (int j = 0; j < picture.width; j++) {
+                double brightness = 0;
+                int count = 0;
+                for (int x = fmax(j - radius, 0); x < fmin(j + radius + 1, picture.width); x++) {
+                    brightness += picture.pixels[i][x];
+                    count++;
+                }
+                pixels[i][j] = round(brightness / count);
+            }
+        }
+    }
+    return pixels;
+}
+
+unsigned char** blur_box_vertically_mp(Picture picture, int radius) {
+    unsigned char** pixels = (unsigned char**)malloc(picture.height * sizeof(unsigned char *));
+
+    for (int i = 0; i < picture.height; i++) {
+        pixels[i] = (unsigned char *)malloc(picture.width * sizeof(unsigned char));
+    }
+
+    #pragma omp parallel
+    {
+        for (int i = 0; i < picture.height; i++) {
+            for (int j = 0; j < picture.width; j++) {
+                double brightness = 0;
+                int count = 0;
+                for (int y = fmax(i - radius, 0); y < fmin(i + radius + 1, picture.height); y++) {
+                    brightness += picture.pixels[y][j];
+                    count++;
+                }
+                pixels[i][j] = round(brightness / count);
+            }
+        }
+    }
+    return pixels;
+}
+
 Picture blur_multi_thread(Picture picture, uint32_t number_of_boxes, float sigma) {
-    return picture;
+    int radius = calculate_box_radius(sigma, number_of_boxes);
+    Picture blurred = copy_picture(picture);
+    unsigned char** pixels;
+
+    for (int iteration = 0; iteration < NUMBER_OF_ITERATIONS; iteration++) {
+        pixels = blur_box_horizontally_mp(blurred, radius);
+        destruct_pixels(blurred.pixels, blurred.height);
+        blurred.pixels = pixels;
+
+        pixels = blur_box_vertically_mp(blurred, radius);
+        destruct_pixels(blurred.pixels, blurred.height);
+        blurred.pixels = pixels;
+    }
+
+    return blurred;
 }
 
 Picture blur(Picture picture, int num_threads, uint32_t number_of_boxes, float sigma) {
